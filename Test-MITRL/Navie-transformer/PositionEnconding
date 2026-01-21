@@ -1,0 +1,60 @@
+import torch
+import torch.nn as nn
+import numpy as np
+
+
+class PositionEncoding(nn.Module):
+    """
+    Sinusoidal positional encoding.
+    支持在 forward 时根据输入序列长度动态扩展 pos_table，避免
+    RuntimeError: size mismatch。
+    """
+    def __init__(self, d_hid: int, n_position: int = 100):
+        """
+        Args:
+            d_hid      : embedding/hidden 维度
+            n_position : 位置表初始长度 —— 若后续输入更长，会自动扩展
+        """
+        super().__init__()
+        self.d_hid = d_hid
+        self.n_position = n_position
+        self.register_buffer('pos_table', self._build_table(n_position, d_hid))  # [1, n_position, d_hid]
+
+    def _build_table(self, n_position: int, d_hid: int) -> torch.Tensor:
+        """生成 (1, n_position, d_hid) 的正弦位置编码表"""
+        def get_angle(pos):
+            return [pos / np.power(10000, 2 * (i // 2) / d_hid) for i in range(d_hid)]
+
+        table = np.array([get_angle(pos) for pos in range(n_position)], dtype=np.float32)
+        table[:, 0::2] = np.sin(table[:, 0::2])   # 偶数维用 sin
+        table[:, 1::2] = np.cos(table[:, 1::2])   # 奇数维用 cos
+        return torch.from_numpy(table).unsqueeze(0)   # shape (1, n_position, d_hid)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x : Tensor, shape (B, L, D)
+
+        Returns:
+            Tensor 与 x 同形状，加入位置编码
+        """
+        B, L, D = x.size()
+        if D != self.d_hid:
+            raise ValueError(f"PositionEncoding: expected hidden dim {self.d_hid}, got {D}")
+
+        # 若输入序列长度超过已有表长，则扩展
+        if L > self.n_position:
+            self.pos_table = self._build_table(L, self.d_hid).to(x.device)
+            self.n_position = L
+
+        pos_enc = self.pos_table[:, :L, :].clone().detach()   # (1, L, D)
+        return x + pos_enc
+
+
+# 简单单元测试
+if __name__ == '__main__':
+    B, L, D = 4, 32, 128
+    x = torch.zeros(B, L, D)
+    pe = PositionEncoding(d_hid=D, n_position=16)  # 初始化比 L 小
+    y = pe(x)
+    print("output shape:", y.shape)                # (4, 32, 128) —— 无报错
