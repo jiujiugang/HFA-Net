@@ -1,0 +1,431 @@
+# 导入必要的库
+from os import path  # 用于文件路径操作
+import os  # 用于操作系统相关的功能
+import numpy as np  # 用于数值计算
+import cv2  # OpenCV 库，用于图像处理
+import time  # 用于时间相关的操作
+import pandas  # 用于数据处理和分析
+from sklearn.metrics import confusion_matrix  # 用于计算混淆矩阵
+import torch.nn as nn  # PyTorch 神经网络模块
+from torch.utils.data import TensorDataset, DataLoader  # PyTorch 数据加载模块
+import argparse  # 用于解析命令行参数
+from distutils.util import strtobool  # 用于将字符串转换为布尔值
+import torch  # PyTorch 深度学习框架
+from model2.MA_TV_28 import DBR_Former_28
+
+#from model2.LWGA_B import DualBLR_Former1
+from model2.LWGA_F import DualBLR_Former_TV
+from tqdm import tqdm
+#import tensorflow as tf
+
+
+# 计算混淆矩阵中的 F1 分数和平均召回率
+def confusionMatrix(gt, pred, show=False):
+    """
+        参数:
+            gt (list): 真实标签列表。
+            pred (list): 预测标签列表。
+            show (bool): 是否打印混淆矩阵，默认为 False。
+
+        返回:
+            f1_score (float): F1 分数。
+            average_recall (float): 平均召回率。
+    """
+    TN, FP, FN, TP = confusion_matrix(gt, pred).ravel()  # 从混淆矩阵中提取 TN, FP, FN, TP
+    """
+        confusion_matrix(gt, pred) 计算混淆矩阵，返回一个二维数组：
+            - 第一行：[TN, FP]
+            - 第二行：[FN, TP]
+        .ravel() 将二/多维数组展平为一维数组，方便提取 TN, FP, FN, TP。
+    """
+    f1_score = (2 * TP) / (2 * TP + FP + FN)  # 计算 F1 分数
+    """
+        F1 分数是精确率（Precision）和召回率（Recall）的调和平均值
+    """
+    num_samples = len([x for x in gt if x == 1])  # 计算正样本的数量
+    """
+        从 gt 列表中筛选出所有值为 1 的元素，并将这些元素组成一个新的列表。
+    """
+    average_recall = TP / num_samples  # 计算平均召回率
+    """
+        平均召回率（Average Recall）是真正例（TP）与正样本总数（num_samples）的比值。
+    """
+    return f1_score, average_recall
+
+
+# 识别评估函数，计算各个类别的 F1 分数和平均召回率
+def recognition_evaluation(final_gt, final_pred, show=False):
+    """
+        多分类问题中，计算每个类别的 F1 分数和平均召回率，并返回全体类别的平均 F1 分数（UF1）和平均召回率（UAR）。
+
+        参数:
+        final_gt (list): 真实标签列表。
+        final_pred (list): 预测标签列表。
+        show (bool): 是否打印每个类别的评估结果，默认为 False。
+
+        返回:
+        UF1 (float): 全体类别的平均 F1 分数。
+        UAR (float): 全体类别的平均召回率。
+    """
+    label_dict = {'negative': 0, 'positive': 1, 'surprise': 2, 'others':3}  # 定义情感标签字典 4分类
+    """
+        定义一个字典，将情感标签映射到对应的索引值。
+    """
+    # Display recognition result
+    f1_list = []  # 创建一个空列表，用于存储每个类别的 F1 分数
+    ar_list = []  # 创建一个空列表，用于存储每个类别的平均召回率
+
+    try:
+        for emotion, emotion_index in label_dict.items():
+            """
+                遍历每个情感类别emotion及其对应的索引值emotion_index。
+                items() 方法返回一个包含字典中所有键值对的视图对象，每个键值对以元组 (key, value) 的形式呈现。
+                emotion: 情感标签（如 'negative'、'positive'、'surprise'）。
+                emotion_index: 情感标签对应的索引值（如 0、1、2）。
+            """
+            gt_recog = [1 if x == emotion_index else 0 for x in final_gt]  # 将 ground truth 转换为二分类格式
+            """
+                遍历真实标签列表 final_gt 中的每个元素 x，并根据条件生成一个新的列表 gt_recog。
+                - 如果标签值等于当前情感类别的索引值 emotion_index，则标记为 1（正样本）。
+                - 否则标记为 0（负样本）。
+            """
+            pred_recog = [1 if x == emotion_index else 0 for x in final_pred]  # 将预测结果转换为二分类格式
+            """
+                遍历预测标签列表 final_recog 中的每个元素 x，并根据条件生成一个新的列表 pred_recog。
+                - 如果预测值等于当前情感类别的索引值 emotion_index，则标记为 1（正样本）。
+                - 否则标记为 0（负样本）。
+            """
+            try:
+                f1_recog, ar_recog = confusionMatrix(gt_recog, pred_recog)  # 计算 F1 分数和平均召回率
+                """
+                    调用 confusionMatrix 函数，计算当前情感类别的 F1 分数和平均召回率。
+                """
+                f1_list.append(f1_recog)
+                ar_list.append(ar_recog)
+                """
+                    将计算得到的 F1 分数和平均召回率添加到对应的列表中。
+                """
+            except Exception as e:
+                pass
+                """
+                    如果在计算 F1 分数和平均召回率时出现异常，则忽略当前情感类别的计算。
+                    在 Python 里，try-except 语句用于捕获和处理异常。具体来说：
+                        try 块：包含可能会引发异常的代码。
+                        except 块：当 try 块中的代码引发异常时，程序流程会跳转到 except 块中执行相应的处理代码。
+                    pass 语句是一个空语句，什么都不做。
+                """
+        UF1 = np.mean(f1_list)  # 计算全体类别的平均 F1 分数
+        """
+            使用 mean 函数计算 f1_list 列表中所有元素的算术平均值,即所有情感类别的平均 F1 分数。
+        """
+        UAR = np.mean(ar_list)  # 计算全体类别的平均召回率
+        return UF1, UAR
+    except:
+        return '', ''  # 如果在执行过程中出现任何异常，则返回空字符串。
+
+# 在模型中加入早停机制
+class EarlyStopping:
+    def __init__(self, patience=5, verbose=False, delta=0):
+        self.patience = patience  # 设置耐心参数，表示若验证集准确率在多轮内未改善，则停止训练
+        self.verbose = verbose  # 是否打印早停信息
+        self.delta = delta  # 最小改善值，如果验证集准确率的提升小于该值，则认为没有改善
+        self.best_score = None  # 最佳验证准确率
+        self.early_stop = False  # 是否执行早停
+        self.counter = 0  # 当前耐心计数
+        self.best_model_wts = None  # 保存最佳模型的权重
+
+    def __call__(self, val_acc, model):
+        if self.best_score is None:
+            self.best_score = val_acc  # 初始时设置最佳验证准确率为当前的验证准确率
+            self.save_best_model(model)  # 保存模型
+        elif val_acc < self.best_score + self.delta:
+            self.counter += 1  # 如果验证准确率没有显著提升，增加计数
+            if self.counter >= self.patience:
+                self.early_stop = True  # 超过耐心值，停止训练
+        else:
+            self.best_score = val_acc  # 更新最佳验证准确率
+            self.save_best_model(model)  # 保存模型
+            self.counter = 0  # 重置计数
+
+    def save_best_model(self, model):
+        self.best_model_wts = model.state_dict()  # 保存当前模型的权重
+
+
+# 主训练和评估函数
+def main(config):
+    # 初始化参数
+    learning_rate = 0.00005  # 设置学习率
+    batch_size = 32  # 设置批量大小
+    epochs = 100  # 设置训练轮数
+    all_accuracy_dict = {}  # 初始化存储所有准确率的字典
+    is_cuda = torch.cuda.is_available()  # 检查是否有可用的 GPU
+    if is_cuda:
+        device = torch.device('cuda')  # 如果有 GPU，则使用 GPU
+    else:
+        device = torch.device('cpu')  # 否则使用 CPU
+    loss_fn = nn.CrossEntropyLoss()  # 定义损失函数，计算的是每个样本的交叉熵损失的平均值(标量张量)。
+
+    # 定义两个支路的图像路径
+    main_path1 = r'D:\CJQ\one\dataset\GADF_color_loso'  # 支路1数据集路径
+    main_path2 = r'D:\CJQ\one\dataset\flow(on-ap)_png_loso'  # 支路2数据集路径
+
+    # 如果是训练模式，则创建存储权重的目录
+    if config.train:
+        if not path.exists(
+                R'D:\CJQ\one\model_DBR_Former_28\GADF'):
+            os.mkdir(
+                R'D:\CJQ\one\model_DBR_Former_28\GADF')
+
+    print('lr=%f, epochs=%d, device=%s\n' % (learning_rate, epochs, device))
+
+    total_gt = []  # 初始化存储所有真实标签（ground truths）的列表
+    total_pred = []  # 初始化存储所有预测结果的列表
+    best_total_pred = []  # 初始化存储最佳预测结果的列表
+
+    t = time.time()  # 记录开始时间
+
+    # 获取所有主体（Subject）的名称
+    subName1 = os.listdir(main_path1)  # 支路1的主体名称
+    subName2 = os.listdir(main_path2)  # 支路2的主体名称
+
+    # 确保两个支路的主体名称相同
+    assert set(subName1) == set(subName2), "两个支路的主体名称不一致"
+    subName = subName1  # 使用任一主体名称列表
+
+    print("Subjects:", subName)
+
+    # 处理每个主体的数据
+    for n_subName in subName:
+        print('Subject:', n_subName)
+        y_train = []  # 初始化 存储训练标签的列表
+        y_test = []  # 初始化 存储测试标签的列表
+        branch1_train = []  # 初始化 存储支路1训练数据的列表
+        branch2_train = []  # 初始化 存储支路2训练数据的列表
+        branch1_test = []  # 初始化 存储支路1测试数据的列表
+        branch2_test = []  # 初始化 存储支路2测试数据的列表
+
+        # 加载训练数据 - 支路1
+        expression_path1 = os.path.join(main_path1, n_subName, 'u_train')
+        expression1 = os.listdir(expression_path1)  # 获取支路1的表情类别
+
+        for n_expression in expression1:
+            img_path1 = os.path.join(expression_path1, n_expression)
+            img_files1 = os.listdir(img_path1)  # 获取支路1的图像文件
+
+            for n_img in img_files1:
+                y_train.append(int(n_expression))  # 添加标签
+
+                # 读取并处理支路1图像
+                full_img_path1 = os.path.join(img_path1, n_img)
+                resized_img1 = cv2.imread(full_img_path1)
+                branch1_train.append(resized_img1)
+
+                # 找到对应的支路2图像
+                expression_path2 = os.path.join(main_path2, n_subName, 'u_train', n_expression)
+                full_img_path2 = os.path.join(expression_path2, n_img)
+
+                # 读取并处理支路2图像
+                #resized_img2 = cv2.resize(cv2.imread(full_img_path2), (224, 224))
+                resized_img2 = cv2.imread(full_img_path2)
+                branch2_train.append(resized_img2)
+
+        # 加载测试数据 - 支路1
+        expression_path1 = os.path.join(main_path1, n_subName, 'u_test')
+        expression1 = os.listdir(expression_path1)  # 获取支路1的表情类别
+
+        for n_expression in expression1:
+            img_path1 = os.path.join(expression_path1, n_expression)
+            img_files1 = os.listdir(img_path1)  # 获取支路1的图像文件
+
+            for n_img in img_files1:
+                y_test.append(int(n_expression))  # 添加标签
+
+                # 读取并处理支路1图像
+                full_img_path1 = os.path.join(img_path1, n_img)
+                resized_img1 = cv2.imread(full_img_path1)
+                branch1_test.append(resized_img1)
+
+                # 找到对应的支路2图像
+                expression_path2 = os.path.join(main_path2, n_subName, 'u_test', n_expression)
+                full_img_path2 = os.path.join(expression_path2, n_img)
+
+                # 读取并处理支路2图像
+                resized_img2 = cv2.imread(full_img_path2)
+                branch2_test.append(resized_img2)
+
+        weight_path = r'D:\CJQ\one\model_DBR_Former_28\GADF' + '/' + n_subName + '.pth'  # 定义权重保存路径
+
+        # 初始化模型和优化器
+        # model_ft = shareViT(    image_size = 224,        #输入图像的大小为224
+        #                    patch_size = 16,         #patch每一个块的大小为16
+        #                    num_classes = 4,      #映射到多少的类别进行分类
+        #                    dim = 1024,              #维度
+        #                    depth = 3,               #堆叠
+        #                    heads = 8,              #多头注意力16个头
+        #                    mlp_dim = 2048,
+        #                    dropout = 0.1,
+        #                    emb_dropout = 0.1)  # 使用 Dual-Swin-T 模型
+        model_ft = DBR_Former_28(num_classes = 4)
+
+        #model = model_ft  #使用的是tensorflow
+        model = model_ft.to(device)  # 将模型移动到指定设备
+
+        if config.train:
+            print('train')
+        else:
+            model.load_state_dict(torch.load(weight_path))  # 加载预训练权重
+
+        #pytorch的模型
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)  # 定义优化器
+        #tensorflow的模型
+        #optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+
+        # 创建训练集
+        y_train = torch.Tensor(y_train).to(dtype=torch.long)  # 将训练标签转换为Tensor张量
+        branch1_train = torch.Tensor(np.array(branch1_train)).permute(0, 3, 1, 2)  # 支路1训练数据
+        branch2_train = torch.Tensor(np.array(branch2_train)).permute(0, 3, 1, 2)  # 支路2训练数据
+
+        # 创建包含两个支路的数据集
+        dataset_train = TensorDataset(branch1_train, branch2_train, y_train)
+        train_dl = DataLoader(dataset_train, batch_size=batch_size)
+
+        # 创建测试集
+        y_test = torch.Tensor(y_test).to(dtype=torch.long)  # 将测试标签转换为Tensor
+        branch1_test = torch.Tensor(np.array(branch1_test)).permute(0, 3, 1, 2)  # 支路1测试数据
+        branch2_test = torch.Tensor(np.array(branch2_test)).permute(0, 3, 1, 2)  # 支路2测试数据
+
+        # 创建包含两个支路的数据集
+        dataset_test = TensorDataset(branch1_test, branch2_test, y_test)
+        test_dl = DataLoader(dataset_test, batch_size=batch_size)
+
+        best_accuracy_for_each_subject = 0  # 初始化一个变量，用于记录当前主体的最佳准确率
+        best_each_subject_pred = []  # 初始化一个变量，用于记录当前主体的最佳预测结果
+
+        if config.train:
+            # 添加进度条
+            progress_bar = tqdm(total=epochs, desc=f"Training {n_subName}", unit="epoch")
+
+        # 创建 EarlyStopping 实例
+        early_stopping = EarlyStopping(patience=10, verbose=True)
+
+        # 训练和评估模型
+        for epoch in range(1, epochs + 1):
+            if config.train:
+                # Training
+                model.train()  # 将模型设置为训练模式 tensorflow模式不需要
+                train_loss = 0.0  # 初始化训练损失，是一个 Python 的标量值
+                num_train_correct = 0  # 初始化训练正确数
+                num_train_examples = 0  # 初始化训练样本数
+
+                for batch in train_dl:  # 遍历训练数据加载器
+                    optimizer.zero_grad()  # 清空梯度,保证每个训练批次的梯度计算是独立的
+                    img1 = batch[0].to(device)  # 支路1数据
+                    img2 = batch[1].to(device)  # 支路2数据
+                    y = batch[2].to(device)  # 标签
+
+                    yhat = model(img1, img2)  # 传入两个支路的输入
+                    # 检查 yhat 是否为元组，如果是则提取第一个元素
+                    if isinstance(yhat, tuple):
+                        yhat = yhat[0]
+
+                    loss = loss_fn(yhat, y)  # 计算损失
+                    loss.backward()  # 反向传播，计算梯度。
+                    optimizer.step()  # 更新模型的权重
+
+                    train_loss += loss.item() * img1.size(0)  # 累加训练损失
+                    num_train_correct += (torch.max(yhat, 1)[1] == y).sum().item()  # 累加训练正确数
+                    num_train_examples += img1.shape[0]  # 累加训练样本数
+
+                train_acc = num_train_correct / num_train_examples  # 计算训练准确率
+                train_loss = train_loss / len(train_dl.dataset)  # 计算平均训练损失
+
+            # Testing
+            model.eval()  # 将模型设置为评估模式
+            val_loss = 0.0  # 初始化测试损失
+            num_val_correct = 0  # 初始化测试正确数
+            num_val_examples = 0  # 初始化测试样本数
+            all_preds = []  # 存储所有预测结果
+
+            for batch in test_dl:
+                img1 = batch[0].to(device)  # 支路1数据
+                img2 = batch[1].to(device)  # 支路2数据
+                y = batch[2].to(device)  # 标签
+
+                yhat = model(img1, img2)  # 传入两个支路的输入
+                # 检查 yhat 是否为元组，如果是则提取第一个元素
+                if isinstance(yhat, tuple):
+                    yhat = yhat[0]
+
+                loss = loss_fn(yhat, y)  # 计算损失
+                val_loss += loss.item() * img1.size(0)  # 累加测试损失
+
+                # 获取预测结果
+                preds = torch.max(yhat, 1)[1]
+                num_val_correct += (preds == y).sum().item()  # 累加测试正确数
+                num_val_examples += y.shape[0]  # 累加测试样本数
+                all_preds.extend(preds.cpu().numpy())  # 存储预测结果
+
+            val_acc = num_val_correct / num_val_examples  # 计算测试准确率
+            val_loss = val_loss / len(test_dl.dataset)  # 计算平均测试损失
+
+            # 10. 保存最佳结果
+            if best_accuracy_for_each_subject <= val_acc:
+                best_accuracy_for_each_subject = val_acc  # 更新当前主体的最佳准确率
+                best_each_subject_pred = all_preds  # 保存最佳预测结果
+
+                # 保存权重
+                if config.train:
+                    torch.save(model.state_dict(), weight_path)  # 保存模型权重
+
+            if config.train:
+                # 更新进度条
+                progress_bar.update(1)
+                progress_bar.set_postfix({
+                    'Train Acc': train_acc,
+                    'Val Acc': val_acc,
+                    'Best Val Acc': best_accuracy_for_each_subject
+                })
+
+            if val_acc == 1:
+                 break
+
+        if config.train:
+            progress_bar.close()
+
+        # For UF1 and UAR computation
+        print('Best Predicted :', best_each_subject_pred)
+        accuracydict = {}  # 初始化存储当前主体准确率的字典
+        accuracydict['pred'] = best_each_subject_pred  # 保存最佳预测结果
+        accuracydict['truth'] = y_test.tolist()  # 保存真实标签
+        all_accuracy_dict[n_subName] = accuracydict  # 将当前主体的准确率信息保存到总字典中
+
+        print('Ground Truth   :', y_test.tolist())
+        total_pred.extend(best_each_subject_pred)  # 将当前主体的预测结果添加到总预测结果列表中
+        total_gt.extend(y_test.tolist())  # 将当前主体的真实标签添加到总真实标签列表中
+        best_total_pred.extend(best_each_subject_pred)  # 将当前主体的最佳预测结果添加到总最佳预测结果列表中
+
+        print(f"Subject {n_subName} completed. Best Val Acc: {best_accuracy_for_each_subject:.4f}")
+
+        # # 调用 EarlyStopping 进行检查和保存最佳模型
+        # early_stopping(val_acc, model)
+        #
+        # # 如果早停标志为 True，提前终止训练
+        # if early_stopping.early_stop:
+        #     print(f"Early stopping at epoch {epoch}")
+        #     model.load_state_dict(early_stopping.best_model_wts)  # 加载最佳模型
+        #     break  # 退出训练循环
+
+    # 计算最终评估指标
+    print('Final Evaluation: ')
+    UF1, UAR = recognition_evaluation(total_gt, total_pred)  # 计算最终的 UF1 和 UAR
+    print('Total Time Taken:', time.time() - t)  # 打印总耗时
+    print(f"UF1: {UF1:.4f}, UAR: {UAR:.4f}")
+    print(all_accuracy_dict)  # 打印所有主体的准确率信息
+
+# 主程序入口
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()  # 初始化命令行参数解析器
+    parser.add_argument('--train', type=int, default=1)  # 定义训练模式参数，默认为 1（训练模式）
+    config = parser.parse_args()  # 解析命令行参数
+    main(config)  # 调用主函数
+
